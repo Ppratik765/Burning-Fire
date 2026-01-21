@@ -4,11 +4,10 @@ import { EffectComposer, RenderPass, EffectPass, BloomEffect } from "postprocess
 
 export default function FlameCanvas() {
   const mountRef = useRef();
-  // mouse.z = 1.0 (Pen Down / Drawing), 0.0 (Pen Up / Not Drawing)
+  // mouse.z = 1.0 (Pen Down), 0.0 (Pen Up)
   const mouse = useRef({ x: 0.5, y: 0.5, z: 1.0 });
 
   useEffect(() => {
-    // 1. Setup Renderer
     const renderer = new THREE.WebGLRenderer({ 
       alpha: true, 
       powerPreference: "high-performance",
@@ -24,8 +23,6 @@ export default function FlameCanvas() {
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    // 2. Render Targets
-    // UPGRADE: Increased to 512 for sharper, less blocky details
     const simRes = 512; 
     const createRT = () =>
       new THREE.WebGLRenderTarget(simRes, simRes, {
@@ -38,12 +35,13 @@ export default function FlameCanvas() {
     let targetA = createRT();
     let targetB = createRT();
 
-    // 3. Simulation Shader (Physics)
+    // --- PHYSICS SHADER (Advection & Buoyancy) ---
     const simMat = new THREE.ShaderMaterial({
       uniforms: {
         prev: { value: targetA.texture },
         mouse: { value: new THREE.Vector3(0, 0, 0) },
         resolution: { value: new THREE.Vector2(simRes, simRes) },
+        time: { value: 0 },
         aspect: { value: window.innerWidth / window.innerHeight },
       },
       vertexShader: `
@@ -56,40 +54,52 @@ export default function FlameCanvas() {
         uniform sampler2D prev;
         uniform vec3 mouse;
         uniform vec2 resolution;
+        uniform float time;
         uniform float aspect;
+
+        float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+        float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+                       mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+        }
 
         void main() {
           vec2 uv = vUv;
-          vec2 px = 1.0 / resolution;
+          
+          // Turbulence
+          float n = noise(uv * 8.0 + vec2(0.0, time * 2.5));
+          vec2 upOffset = vec2((n - 0.5) * 0.006, -0.005); 
+          
+          float heat = texture2D(prev, uv + upOffset).r;
 
-          float center = texture2D(prev, uv).r;
-          float top = texture2D(prev, uv + vec2(0.0, px.y)).r;
-          float bottom = texture2D(prev, uv - vec2(0.0, px.y)).r;
-          float left = texture2D(prev, uv - vec2(px.x, 0.0)).r;
-          float right = texture2D(prev, uv + vec2(px.x, 0.0)).r;
+          // Cooling
+          if (heat > 0.3) {
+             heat *= 0.96; 
+          } else {
+             heat *= 0.99; 
+          }
+          heat -= 0.001; 
 
-          float avg = (top + bottom + left + right + center) / 5.0;
-          float diff = mix(center, avg, 0.6); // Viscosity
-
-          diff *= 0.99; // Cooling
-          diff -= 0.002;
-
+          // Mouse Input
           vec2 m = mouse.xy;
           vec2 d = uv - m;
           d.x *= aspect;
           float len = length(d);
           
-          if(len < 0.06) {
-             float heat = smoothstep(0.06, 0.0, len);
-             diff += heat * 0.8 * mouse.z; 
+          if(len < 0.05) {
+             float fuel = smoothstep(0.05, 0.0, len);
+             heat += fuel * 0.8 * mouse.z;
           }
 
-          gl_FragColor = vec4(max(diff, 0.0), 0.0, 0.0, 1.0);
+          gl_FragColor = vec4(max(heat, 0.0), 0.0, 0.0, 1.0);
         }
       `,
     });
 
-    // 4. Display Shader (The 3D Lava Look)
+    // --- VISUAL SHADER (HDR Fire Colors + Outer Sparkles) ---
     const displayMat = new THREE.ShaderMaterial({
       uniforms: {
         tex: { value: targetA.texture },
@@ -117,75 +127,69 @@ export default function FlameCanvas() {
         }
         float fbm(vec2 p) {
             float v = 0.0;
-            v += 0.5 * noise(p); p *= 2.0;
-            v += 0.25 * noise(p); p *= 2.0;
+            v += 0.5 * noise(p); p *= 2.02;
+            v += 0.25 * noise(p); p *= 2.03;
+            v += 0.125 * noise(p);
             return v;
         }
 
         void main() {
-          // Flow Distortion
-          vec2 flow = vec2(fbm(vUv * 5.0 + time * 0.5), fbm(vUv * 5.0 - time * 0.5)) - 0.5;
-          vec2 uv = vUv + flow * 0.015; 
+          float heat = texture2D(tex, vUv).r;
+          if (heat < 0.001) discard;
+
+          // --- SPARKLES LOGIC (UPDATED) ---
+          // 1. Noise for sparks: High frequency, fast upward motion
+          float sparkNoise = noise(vUv * 60.0 - vec2(0.0, time * 10.0));
           
-          float heat = texture2D(tex, uv).r;
+          // 2. Zone Mask: Define "Outside/Close" to flame
+          // We target the heat range 0.02 -> 0.35 (Smoke/Edge)
+          // We REMOVE sparks from the core (heat > 0.35)
+          float edgeZone = smoothstep(0.02, 0.15, heat) * (1.0 - smoothstep(0.25, 0.45, heat));
           
-          // UPGRADE: Soft Edge (Anti-Voxel)
-          // Instead of 'discard', we fade the alpha out smoothly
-          float alpha = smoothstep(0.01, 0.08, heat);
-          if (alpha < 0.01) discard; // Still discard fully empty pixels for performance
+          // 3. Combine: Threshold noise to create dots, mask by zone
+          float sparkle = step(0.96, sparkNoise) * edgeZone;
 
-          // UPGRADE: Smoother Normals
-          // We sample 2.0 pixels away instead of 1.0. This blurs the shape slightly, 
-          // removing the jagged "minecraft" look from the reflection.
-          vec2 px = (1.0 / resolution.xy) * 2.5; 
-          
-          float hL = texture2D(tex, uv - vec2(px.x, 0.0)).r;
-          float hR = texture2D(tex, uv + vec2(px.x, 0.0)).r;
-          float hD = texture2D(tex, uv - vec2(0.0, px.y)).r;
-          float hU = texture2D(tex, uv + vec2(0.0, px.y)).r;
-          
-          vec3 normal = normalize(vec3( (hL - hR) * 3.0, (hD - hU) * 3.0, 0.05 )); // Lower Z = Steeper slopes
 
-          // Lighting Setup
-          vec3 lightDir = normalize(vec3(0.5, 0.5, 1.0));
-          vec3 viewDir = vec3(0.0, 0.0, 1.0); // Viewer is always looking straight down
+          // 3D Noise Shape for Fire Body
+          vec2 noiseUV = vUv * 4.0 - vec2(0.0, time * 1.5);
+          float shape = fbm(noiseUV);
+          float vol = heat * (0.5 + 0.8 * shape); 
 
-          // 1. Diffuse (Base Shape)
-          float diff = max(dot(normal, lightDir), 0.0);
-          
-          // 2. Specular (Wet Shine)
-          vec3 reflectDir = reflect(-lightDir, normal);
-          float spec = pow(max(dot(viewDir, reflectDir), 0.0), 20.0); // Broader highlight
+          // --- HDR COLOR PALETTE ---
+          vec3 col = vec3(0.0);
+          float alpha = 1.0;
 
-          // 3. Fresnel (Rim Light - The "3D Volume" Trick)
-          // This creates a glow on the steep edges, making it look like a thick liquid bubble.
-          float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
+          vec3 smoke = vec3(0.1, 0.1, 0.12);
+          vec3 darkRed = vec3(0.8, 0.1, 0.05);   
+          vec3 orange = vec3(1.5, 0.5, 0.1);     
+          vec3 yellow = vec3(1.5, 1.2, 0.4);     
+          vec3 core = vec3(1.5, 1.5, 1.2);       
 
-          // Color Ramp
-          float crustNoise = fbm(uv * 10.0 + time * 0.2);
-          float noisyHeat = heat - (crustNoise * 0.15); 
-
-          vec3 rock = vec3(0.02, 0.0, 0.0);       
-          vec3 magma = vec3(0.8, 0.1, 0.0);       
-          vec3 lava = vec3(1.0, 0.4, 0.0);        
-          vec3 bright = vec3(1.0, 0.9, 0.5);      
-
-          vec3 col;
-          if (noisyHeat < 0.15) {
-              col = mix(rock, magma, smoothstep(0.0, 0.15, noisyHeat));
-          } else if (noisyHeat < 0.4) {
-              col = mix(magma, lava, (noisyHeat - 0.15) / 0.25);
+          if (vol < 0.2) {
+             col = smoke;
+             alpha = smoothstep(0.0, 0.2, vol) * 0.6;
+          } else if (vol < 0.4) {
+             col = mix(smoke, darkRed, (vol - 0.2) / 0.2);
+          } else if (vol < 0.75) { 
+             col = mix(darkRed, orange, (vol - 0.4) / 0.35);
+          } else if (vol < 0.95) { 
+             col = mix(orange, yellow, (vol - 0.75) / 0.2);
           } else {
-              col = mix(lava, bright, (noisyHeat - 0.4) / 0.6);
+             col = mix(yellow, core, (vol - 0.95) / 0.05);
           }
 
-          // Composite Lighting
-          // Add specular white
-          col += vec3(1.0, 0.9, 0.8) * spec * 0.6; 
-          // Add Fresnel Rim (Orange/Red Glow)
-          col += vec3(1.0, 0.3, 0.0) * fresnel * 0.8; 
-          // Apply Shadows
-          col *= (0.6 + diff * 0.4);
+          // Fake 3D Lighting
+          float edge = fbm(noiseUV + 0.1) - shape;
+          float light = max(0.0, edge * 4.0);
+          col += light * 0.3; 
+
+          // --- APPLY SPARKLES ---
+          // Add them on top. They are outside the core, so they float in the smoke.
+          // Very bright HDR orange/gold color.
+          if (sparkle > 0.0) {
+              col += vec3(2.0, 1.5, 0.5) * sparkle * 2.0;
+              alpha = max(alpha, 0.8); // Ensure sparks are visible even in thin smoke
+          }
 
           gl_FragColor = vec4(col, alpha);
         }
@@ -197,13 +201,13 @@ export default function FlameCanvas() {
     const mesh = new THREE.Mesh(plane, simMat);
     scene.add(mesh);
 
-    // 5. Post-Processing
+    // --- POST PROCESSING ---
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
-        intensity: 3.0,
-        luminanceThreshold: 0.1, 
-        radius: 0.9
+        intensity: 2.5,
+        luminanceThreshold: 0.15,
+        radius: 0.85
     })));
 
     function animate(t) {
@@ -212,6 +216,7 @@ export default function FlameCanvas() {
       // Simulation
       mesh.material = simMat;
       simMat.uniforms.prev.value = targetA.texture;
+      simMat.uniforms.time.value = timeVal;
       simMat.uniforms.mouse.value.set(mouse.current.x, 1.0 - mouse.current.y, mouse.current.z);
       
       renderer.setRenderTarget(targetB);
@@ -234,7 +239,7 @@ export default function FlameCanvas() {
 
     animate(0);
 
-    // --- INPUT HANDLING ---
+    // --- EVENTS ---
     function onResize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
@@ -242,42 +247,23 @@ export default function FlameCanvas() {
         composer.setSize(w, h);
         simMat.uniforms.aspect.value = w / h;
     }
-
     function onMouseMove(e) {
       mouse.current.x = e.clientX / window.innerWidth;
       mouse.current.y = e.clientY / window.innerHeight;
     }
-
     function onMouseDown(e) {
       if (e.button === 0) mouse.current.z = 1.0;
       if (e.button === 2) mouse.current.z = 0.0;
     }
-
-    function onContextMenu(e) {
-      e.preventDefault();
-    }
-
+    function onContextMenu(e) { e.preventDefault(); }
+    function onTouchStart(e) { if (e.cancelable) e.preventDefault(); mouse.current.z = 1.0; updateTouch(e); }
+    function onTouchMove(e) { if (e.cancelable) e.preventDefault(); updateTouch(e); }
+    function onTouchEnd() { mouse.current.z = 0.0; }
     function updateTouch(e) {
         if(e.touches.length > 0) {
-            const touch = e.touches[0];
-            mouse.current.x = touch.clientX / window.innerWidth;
-            mouse.current.y = touch.clientY / window.innerHeight;
+            mouse.current.x = e.touches[0].clientX / window.innerWidth;
+            mouse.current.y = e.touches[0].clientY / window.innerHeight;
         }
-    }
-
-    function onTouchStart(e) {
-        if (e.cancelable) e.preventDefault(); 
-        mouse.current.z = 1.0; 
-        updateTouch(e);
-    }
-
-    function onTouchMove(e) {
-        if (e.cancelable) e.preventDefault();
-        updateTouch(e);
-    }
-
-    function onTouchEnd(e) {
-        mouse.current.z = 0.0;
     }
 
     window.addEventListener("resize", onResize);
@@ -296,15 +282,10 @@ export default function FlameCanvas() {
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("touchend", onTouchEnd);
-
-      if (mountRef.current && renderer.domElement) {
-        mountRef.current.removeChild(renderer.domElement);
-      }
-      renderer.dispose();
-      targetA.dispose();
-      targetB.dispose();
+      if (mountRef.current && renderer.domElement) mountRef.current.removeChild(renderer.domElement);
+      renderer.dispose(); targetA.dispose(); targetB.dispose();
     };
   }, []);
 
-  return <div ref={mountRef} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", zIndex: 10, cursor: 'crosshair' }} />;
+  return <div ref={mountRef} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", zIndex: 10, cursor: 'crosshair', background: '#000' }} />;
 }
