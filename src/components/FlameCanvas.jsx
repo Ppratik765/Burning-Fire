@@ -14,7 +14,7 @@ export default function FlameCanvas() {
     // 2. Setup Audio
     const audio = new Audio(fireSound);
     audio.loop = true; // Loop the campfire track
-    audio.volume = 1.5;
+    audio.volume = 1;
     audioRef.current = audio;
 
     // Helper to start audio on first interaction
