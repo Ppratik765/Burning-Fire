@@ -167,8 +167,8 @@ export default function FlameCanvas() {
           if (vol < 0.2) { col = smoke; alpha = smoothstep(0.0, 0.2, vol) * 0.6; } 
           else if (vol < 0.4) { col = mix(smoke, darkRed, (vol - 0.2) / 0.2); } 
           else if (vol < 0.75) { col = mix(darkRed, orange, (vol - 0.4) / 0.35); } 
-          else if (vol < 0.95) { col = mix(orange, yellow, (vol - 0.75) / 0.2); } 
-          else { col = mix(yellow, core, (vol - 0.95) / 0.05); }
+          else if (vol < 0.97) { col = mix(orange, yellow, (vol - 0.75) / 0.22); } 
+          else { col = mix(yellow, core, (vol - 0.97) / 0.03);; }
 
           float edge = fbm(noiseUV + 0.1) - shape;
           float light = max(0.0, edge * 4.0);
@@ -192,7 +192,7 @@ export default function FlameCanvas() {
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
         intensity: 3.5,
-        luminanceThreshold: 0.25,
+        luminanceThreshold: 0.22,
         radius: 0.95
     })));
 
