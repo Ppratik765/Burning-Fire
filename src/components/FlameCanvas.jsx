@@ -162,7 +162,7 @@ export default function FlameCanvas() {
           vec3 darkRed = vec3(0.8, 0.1, 0.05);   
           vec3 orange = vec3(1.5, 0.5, 0.1);     
           vec3 yellow = vec3(1.5, 1.2, 0.4);     
-          vec3 core = vec3(2.0, 1.5, 0.3);       
+          vec3 core = vec3(1.5, 1.5, 0.8);       
 
           if (vol < 0.2) { col = smoke; alpha = smoothstep(0.0, 0.2, vol) * 0.6; } 
           else if (vol < 0.4) { col = mix(smoke, darkRed, (vol - 0.2) / 0.2); } 
@@ -191,9 +191,9 @@ export default function FlameCanvas() {
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
-        intensity: 2.5,
-        luminanceThreshold: 0.15,
-        radius: 0.85
+        intensity: 3.5,
+        luminanceThreshold: 0.25,
+        radius: 0.95
     })));
 
     function animate(t) {
