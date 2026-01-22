@@ -162,13 +162,13 @@ export default function FlameCanvas() {
           vec3 darkRed = vec3(0.8, 0.1, 0.05);   
           vec3 orange = vec3(1.5, 0.5, 0.1);     
           vec3 yellow = vec3(1.5, 1.2, 0.4);     
-          vec3 core = vec3(1.5, 1.5, 0.8);       
+          vec3 core = vec3(1.5, 1.5, 0.6);       
 
           if (vol < 0.2) { col = smoke; alpha = smoothstep(0.0, 0.2, vol) * 0.6; } 
           else if (vol < 0.4) { col = mix(smoke, darkRed, (vol - 0.2) / 0.2); } 
           else if (vol < 0.75) { col = mix(darkRed, orange, (vol - 0.4) / 0.35); } 
-          else if (vol < 0.97) { col = mix(orange, yellow, (vol - 0.75) / 0.22); } 
-          else { col = mix(yellow, core, (vol - 0.97) / 0.03);; }
+          else if (vol < 0.98) { col = mix(orange, yellow, (vol - 0.75) / 0.21); } 
+          else { col = mix(yellow, core, (vol - 0.98) / 0.02);; }
 
           float edge = fbm(noiseUV + 0.1) - shape;
           float light = max(0.0, edge * 4.0);
