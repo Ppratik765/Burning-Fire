@@ -103,8 +103,8 @@ export default function FlameCanvas() {
           d.x *= aspect;
           float len = length(d);
           
-          if(len < 0.05) {
-             float fuel = smoothstep(0.05, 0.0, len);
+          if(len < 0.068) {
+             float fuel = smoothstep(0.068, 0.0, len);
              heat += fuel * 0.8 * mouse.z;
           }
 
@@ -162,7 +162,7 @@ export default function FlameCanvas() {
           vec3 darkRed = vec3(0.8, 0.1, 0.05);   
           vec3 orange = vec3(1.5, 0.5, 0.1);     
           vec3 yellow = vec3(1.5, 1.2, 0.4);     
-          vec3 core = vec3(1.5, 1.5, 1.2);       
+          vec3 core = vec3(2.0, 1.5, 0.3);       
 
           if (vol < 0.2) { col = smoke; alpha = smoothstep(0.0, 0.2, vol) * 0.6; } 
           else if (vol < 0.4) { col = mix(smoke, darkRed, (vol - 0.2) / 0.2); } 
