@@ -1,13 +1,25 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { EffectComposer, RenderPass, EffectPass, BloomEffect } from "postprocessing";
+import fireSfx from "../assets/fire.m4a"; // Import the audio file
 
 export default function FlameCanvas() {
   const mountRef = useRef();
   // mouse.z = 1.0 (Pen Down), 0.0 (Pen Up)
   const mouse = useRef({ x: 0.5, y: 0.5, z: 1.0 });
+  // Track previous mouse position to calculate velocity (Inertia)
+  const lastMouse = useRef({ x: 0.5, y: 0.5 });
+  // Store the audio object
+  const audioRef = useRef(null);
 
   useEffect(() => {
+    // --- AUDIO SETUP ---
+    const audio = new Audio(fireSfx);
+    audio.loop = true; 
+    audio.volume = 0.8; 
+    audioRef.current = audio;
+
+    // --- RENDERER SETUP ---
     const renderer = new THREE.WebGLRenderer({ 
       alpha: true, 
       powerPreference: "high-performance",
@@ -35,11 +47,12 @@ export default function FlameCanvas() {
     let targetA = createRT();
     let targetB = createRT();
 
-    // --- PHYSICS SHADER (Advection & Buoyancy) ---
+    // --- PHYSICS SHADER (With Inertia/Wind) ---
     const simMat = new THREE.ShaderMaterial({
       uniforms: {
         prev: { value: targetA.texture },
         mouse: { value: new THREE.Vector3(0, 0, 0) },
+        velocity: { value: new THREE.Vector2(0, 0) }, // NEW: Mouse Velocity
         resolution: { value: new THREE.Vector2(simRes, simRes) },
         time: { value: 0 },
         aspect: { value: window.innerWidth / window.innerHeight },
@@ -53,6 +66,7 @@ export default function FlameCanvas() {
         varying vec2 vUv;
         uniform sampler2D prev;
         uniform vec3 mouse;
+        uniform vec2 velocity; // Input Velocity
         uniform vec2 resolution;
         uniform float time;
         uniform float aspect;
@@ -69,9 +83,16 @@ export default function FlameCanvas() {
         void main() {
           vec2 uv = vUv;
           
-          // Turbulence
+          // 1. INERTIA / WIND CALCULATION
+          // We add the mouse velocity to the lookup coordinate.
+          // By subtracting velocity from the UV, we "pull" the fire in the direction of movement.
+          // 'velocity * 0.15' controls the strength of the "Whoosh".
+          vec2 wind = velocity * 0.15;
+
+          // 2. TURBULENCE (Natural Rise)
           float n = noise(uv * 8.0 + vec2(0.0, time * 2.5));
-          vec2 upOffset = vec2((n - 0.5) * 0.006, -0.005); 
+          // Standard rise + Wind influence
+          vec2 upOffset = vec2((n - 0.5) * 0.006, -0.005) - wind; 
           
           float heat = texture2D(prev, uv + upOffset).r;
 
@@ -99,7 +120,7 @@ export default function FlameCanvas() {
       `,
     });
 
-    // --- VISUAL SHADER (HDR Fire Colors + Outer Sparkles) ---
+    // --- VISUAL SHADER (Same as before) ---
     const displayMat = new THREE.ShaderMaterial({
       uniforms: {
         tex: { value: targetA.texture },
@@ -137,25 +158,16 @@ export default function FlameCanvas() {
           float heat = texture2D(tex, vUv).r;
           if (heat < 0.001) discard;
 
-          // --- SPARKLES LOGIC (UPDATED) ---
-          // 1. Noise for sparks: High frequency, fast upward motion
+          // Sparkles
           float sparkNoise = noise(vUv * 60.0 - vec2(0.0, time * 10.0));
-          
-          // 2. Zone Mask: Define "Outside/Close" to flame
-          // We target the heat range 0.02 -> 0.35 (Smoke/Edge)
-          // We REMOVE sparks from the core (heat > 0.35)
           float edgeZone = smoothstep(0.02, 0.15, heat) * (1.0 - smoothstep(0.25, 0.45, heat));
-          
-          // 3. Combine: Threshold noise to create dots, mask by zone
           float sparkle = step(0.96, sparkNoise) * edgeZone;
 
-
-          // 3D Noise Shape for Fire Body
           vec2 noiseUV = vUv * 4.0 - vec2(0.0, time * 1.5);
           float shape = fbm(noiseUV);
           float vol = heat * (0.5 + 0.8 * shape); 
 
-          // --- HDR COLOR PALETTE ---
+          // HDR Colors
           vec3 col = vec3(0.0);
           float alpha = 1.0;
 
@@ -178,17 +190,13 @@ export default function FlameCanvas() {
              col = mix(yellow, core, (vol - 0.95) / 0.05);
           }
 
-          // Fake 3D Lighting
           float edge = fbm(noiseUV + 0.1) - shape;
           float light = max(0.0, edge * 4.0);
           col += light * 0.3; 
 
-          // --- APPLY SPARKLES ---
-          // Add them on top. They are outside the core, so they float in the smoke.
-          // Very bright HDR orange/gold color.
           if (sparkle > 0.0) {
               col += vec3(2.0, 1.5, 0.5) * sparkle * 2.0;
-              alpha = max(alpha, 0.8); // Ensure sparks are visible even in thin smoke
+              alpha = max(alpha, 0.8);
           }
 
           gl_FragColor = vec4(col, alpha);
@@ -201,7 +209,6 @@ export default function FlameCanvas() {
     const mesh = new THREE.Mesh(plane, simMat);
     scene.add(mesh);
 
-    // --- POST PROCESSING ---
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
     composer.addPass(new EffectPass(camera, new BloomEffect({
@@ -210,8 +217,25 @@ export default function FlameCanvas() {
         radius: 0.85
     })));
 
+    // --- ANIMATION LOOP ---
     function animate(t) {
       const timeVal = t * 0.001;
+
+      // 1. Calculate Velocity (Inertia)
+      // Velocity = Current Position - Last Position
+      const currentX = mouse.current.x;
+      const currentY = mouse.current.y;
+      
+      const velX = (currentX - lastMouse.current.x);
+      const velY = (currentY - lastMouse.current.y);
+
+      // Smooth the velocity slightly if needed, or pass raw for snappiness
+      // We pass the RAW velocity to the shader to 'throw' the fire
+      simMat.uniforms.velocity.value.set(velX, velY);
+
+      // Update last mouse position for next frame
+      lastMouse.current.x = currentX;
+      lastMouse.current.y = currentY;
 
       // Simulation
       mesh.material = simMat;
@@ -239,6 +263,20 @@ export default function FlameCanvas() {
 
     animate(0);
 
+    // --- HELPER: AUDIO CONTROL ---
+    const playAudio = () => {
+        if (audioRef.current) {
+            audioRef.current.play().catch(e => console.log("Audio autoplay blocked:", e));
+        }
+    };
+
+    const pauseAudio = () => {
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.currentTime = 0; // Optional: Reset to start
+        }
+    };
+
     // --- EVENTS ---
     function onResize() {
         const w = window.innerWidth;
@@ -247,18 +285,46 @@ export default function FlameCanvas() {
         composer.setSize(w, h);
         simMat.uniforms.aspect.value = w / h;
     }
+    
     function onMouseMove(e) {
       mouse.current.x = e.clientX / window.innerWidth;
       mouse.current.y = e.clientY / window.innerHeight;
     }
+    
     function onMouseDown(e) {
-      if (e.button === 0) mouse.current.z = 1.0;
-      if (e.button === 2) mouse.current.z = 0.0;
+      if (e.button === 0) {
+          mouse.current.z = 1.0;
+          playAudio(); // START AUDIO
+      }
+      if (e.button === 2) {
+          mouse.current.z = 0.0;
+          pauseAudio(); // STOP AUDIO
+      }
     }
+
+    // Stop audio on global mouse up (optional, depends on preference)
+    // Currently logic is: Left Click = Fire ON, Right Click = Fire OFF
+    // If you want "Hold to Burn", uncomment the window.addEventListener("mouseup", ...) logic below.
+
     function onContextMenu(e) { e.preventDefault(); }
-    function onTouchStart(e) { if (e.cancelable) e.preventDefault(); mouse.current.z = 1.0; updateTouch(e); }
-    function onTouchMove(e) { if (e.cancelable) e.preventDefault(); updateTouch(e); }
-    function onTouchEnd() { mouse.current.z = 0.0; }
+    
+    function onTouchStart(e) { 
+        if (e.cancelable) e.preventDefault(); 
+        mouse.current.z = 1.0; 
+        playAudio(); // START AUDIO
+        updateTouch(e); 
+    }
+    
+    function onTouchMove(e) { 
+        if (e.cancelable) e.preventDefault(); 
+        updateTouch(e); 
+    }
+    
+    function onTouchEnd() { 
+        mouse.current.z = 0.0; 
+        pauseAudio(); // STOP AUDIO
+    }
+    
     function updateTouch(e) {
         if(e.touches.length > 0) {
             mouse.current.x = e.touches[0].clientX / window.innerWidth;
@@ -282,6 +348,10 @@ export default function FlameCanvas() {
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchmove", onTouchMove);
       window.removeEventListener("touchend", onTouchEnd);
+      if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current = null;
+      }
       if (mountRef.current && renderer.domElement) mountRef.current.removeChild(renderer.domElement);
       renderer.dispose(); targetA.dispose(); targetB.dispose();
     };
